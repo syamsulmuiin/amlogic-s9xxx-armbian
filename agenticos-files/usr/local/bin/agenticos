@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Agenticos: agent loop minimal di atas llama-server lokal (stdlib saja, hemat RAM)."""
+import json, os, pathlib, shlex, subprocess, sys, time, urllib.request, urllib.error
+
+def load_conf(path="/etc/agenticos/agenticos.conf"):
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k, v.strip().strip('"'))
+    except FileNotFoundError:
+        pass
+
+load_conf()
+URL = os.environ.get("AGENTICOS_LLM_URL", "http://127.0.0.1:8080/v1/chat/completions")
+WORKSPACE = pathlib.Path(os.environ.get("AGENTICOS_WORKSPACE", "/var/lib/agenticos/workspace"))
+LOG = os.environ.get("AGENTICOS_LOG", "/var/log/agenticos/actions.jsonl")
+MAX_STEPS = int(os.environ.get("AGENTICOS_MAX_STEPS", "6"))
+ALLOWED_CMDS = {"uptime", "free", "df", "date", "uname", "hostname", "ip", "ps"}
+
+def safe_path(p):
+    full = (WORKSPACE / p).resolve()
+    if WORKSPACE.resolve() not in full.parents and full != WORKSPACE.resolve():
+        raise ValueError("path di luar workspace")
+    return full
+
+def t_list_dir(path="."):
+    return "\n".join(sorted(x.name for x in safe_path(path).iterdir())) or "(kosong)"
+
+def t_read_file(path):
+    return safe_path(path).read_text()[:2000]
+
+def t_write_file(path, content):
+    f = safe_path(path)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(content)
+    return f"ditulis {len(content)} karakter ke {path}"
+
+def t_run(cmd):
+    argv = shlex.split(cmd)
+    if not argv or argv[0] not in ALLOWED_CMDS:
+        raise ValueError(f"perintah tidak diizinkan: {argv[:1]}")
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    return (r.stdout + r.stderr)[:2000]
+
+def t_system_status():
+    mem = {l.split(":")[0]: l.split()[1] for l in open("/proc/meminfo")}
+    out = f"load={open('/proc/loadavg').read().split()[:3]} MemAvailable={int(mem['MemAvailable'])//1024}MB"
+    try:
+        out += f" temp={int(open('/sys/class/thermal/thermal_zone0/temp').read())/1000:.0f}C"
+    except OSError:
+        pass
+    return out
+
+# nama -> (fungsi, deskripsi, perlu_persetujuan)
+TOOLS = {
+    "list_dir":      (t_list_dir, "list_dir(path='.') daftar isi folder workspace", False),
+    "read_file":     (t_read_file, "read_file(path) baca file di workspace", False),
+    "write_file":    (t_write_file, "write_file(path, content) tulis file di workspace", True),
+    "run":           (t_run, "run(cmd) jalankan perintah read-only: " + ", ".join(sorted(ALLOWED_CMDS)), False),
+    "system_status": (t_system_status, "system_status() beban CPU, RAM bebas, suhu", False),
+    "finish":        (None, "finish(answer) akhiri tugas dan beri jawaban final", False),
+}
+
+SCHEMA = {"type": "object",
+          "properties": {"thought": {"type": "string"},
+                         "tool": {"type": "string", "enum": list(TOOLS)},
+                         "args": {"type": "object"}},
+          "required": ["thought", "tool", "args"]}
+
+SYSTEM = ("You are Agenticos, a local agent on a small Linux device. Solve the task step by step. "
+          "Each turn reply with ONE JSON object: thought, tool, args. Tools:\n"
+          + "\n".join("- " + d for _, d, _ in TOOLS.values())
+          + "\nAfter each tool you get an Observation. Use finish when done. "
+            "Answer in the user's language.")
+
+def chat(messages):
+    body = json.dumps({"messages": messages, "temperature": 0.2, "max_tokens": 300,
+                       "response_format": {"type": "json_object", "schema": SCHEMA}}).encode()
+    req = urllib.request.Request(URL, body, {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        return json.load(r)["choices"][0]["message"]["content"]
+
+def audit(entry):
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(json.dumps({"ts": time.strftime("%FT%T"), **entry}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+def approved(name, args):
+    if os.environ.get("AGENTICOS_AUTO_APPROVE") == "1":
+        return True
+    if not sys.stdin.isatty():
+        return False
+    return input(f"Izinkan {name}({json.dumps(args, ensure_ascii=False)[:200]})? [y/N] ").lower() == "y"
+
+def run_task(task):
+    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
+    for step in range(MAX_STEPS):
+        try:
+            raw = chat(msgs)
+        except (urllib.error.URLError, OSError) as e:
+            return f"LLM server tidak terjangkau: {e}"
+        msgs.append({"role": "assistant", "content": raw})
+        try:
+            act = json.loads(raw)
+            name, args = act["tool"], act.get("args") or {}
+        except (ValueError, KeyError):
+            msgs.append({"role": "user", "content": "Observation: output bukan JSON valid"})
+            continue
+        if name == "finish":
+            audit({"task": task, "tool": "finish", "args": args})
+            return str(args.get("answer", ""))
+        fn, _, needs_ok = TOOLS[name]
+        if needs_ok and not approved(name, args):
+            obs = "DITOLAK: butuh persetujuan manusia"
+        else:
+            try:
+                obs = fn(**args)
+            except Exception as e:
+                obs = f"ERROR: {e}"
+        audit({"task": task, "step": step, "tool": name, "args": args, "obs": obs[:300]})
+        print(f"[{step+1}] {name} -> {obs[:120]!r}", file=sys.stderr)
+        msgs.append({"role": "user", "content": f"Observation: {obs[:800]}"})
+    return "Batas langkah tercapai tanpa jawaban final."
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        print(run_task(" ".join(sys.argv[1:])))
+    else:
+        while True:
+            try:
+                task = input("agenticos> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if task:
+                print(run_task(task))

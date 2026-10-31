@@ -1,0 +1,13 @@
+[Unit]
+Description=Agenticos local LLM server (llama.cpp)
+After=network.target
+ConditionPathExists=/var/lib/agenticos/models/model.gguf
+
+[Service]
+EnvironmentFile=/etc/agenticos/agenticos.conf
+ExecStart=/usr/local/bin/llama-server -m ${AGENTICOS_MODEL_PATH} -c ${AGENTICOS_CTX} -t ${AGENTICOS_THREADS} --host 127.0.0.1 --port 8080
+Restart=on-failure
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

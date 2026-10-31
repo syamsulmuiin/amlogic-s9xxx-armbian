@@ -1,0 +1,14 @@
+[Unit]
+Description=Agenticos first boot setup
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/agenticos/.firstboot-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/agenticos-firstboot
+TimeoutStartSec=0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

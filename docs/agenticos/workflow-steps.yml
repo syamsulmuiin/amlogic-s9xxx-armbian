@@ -1,0 +1,20 @@
+# Sisipkan langkah-langkah ini di workflow build SEBELUM langkah yang memanggil rebuild/action ophub.
+# Syarat: base image Debian trixie atau Ubuntu 24.04+ (glibc >= runner). Jalankan dari root repo.
+- name: Cross-compile llama-server untuk Cortex-A53
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+    git clone --depth 1 https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
+    cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+      -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+      -DCMAKE_C_FLAGS="-mcpu=cortex-a53" -DCMAKE_CXX_FLAGS="-mcpu=cortex-a53" \
+      -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF
+    cmake --build /tmp/llama.cpp/build --target llama-server -j"$(nproc)"
+    install -D -m 755 /tmp/llama.cpp/build/bin/llama-server agenticos-files/usr/local/bin/llama-server
+
+- name: Unduh model ke overlay
+  run: |
+    . agenticos-files/etc/agenticos/agenticos.conf
+    mkdir -p agenticos-files/var/lib/agenticos/models
+    curl -L --retry 5 -o agenticos-files/var/lib/agenticos/models/model.gguf "$AGENTICOS_MODEL_URL"

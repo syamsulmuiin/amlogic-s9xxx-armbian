@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. /etc/agenticos/agenticos.conf
+STAMP=/var/lib/agenticos/.firstboot-done
+[ -f "$STAMP" ] && exit 0
+[ -x /usr/local/bin/llama-server ] || { echo "Agenticos image is missing llama-server" >&2; exit 1; }
+[ -s "$AGENTICOS_MODEL_PATH" ] || { echo "Agenticos image is missing the bundled model" >&2; exit 1; }
+mkdir -p /var/lib/agenticos/workspace /var/log/agenticos
+systemctl daemon-reload
+systemctl enable --now llama-server.service
+touch "$STAMP"
+echo '[agenticos-firstboot] Ready. Run: agenticos "cek status sistem"'
