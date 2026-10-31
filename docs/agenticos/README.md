@@ -19,3 +19,7 @@ The original overlay workflow snippet is retained in `workflow-steps.yml` for pr
 ## Validation limits
 
 A successful Actions build does not prove physical HG680P boot, eMMC installation, available RAM at context 2048, or inference speed. Confirm these on the device before considering the image validated for hardware use. Actual kernel patch versions and compressed image sizes are recorded by each build, not inferred from the selected series.
+
+## Initial branch build
+
+A push changing the Agenticos workflow or overlay on branch `agenticos` starts a build with the documented defaults. This enables validation before merging the new workflow to `main`. Manual `workflow_dispatch` remains available. No original workflow is modified.
