@@ -486,6 +486,15 @@ jobs:
           test "$(head -c 4 agenticos-files/var/lib/agenticos/models/model.gguf)" = GGUF
           ls -lh agenticos-files/var/lib/agenticos/models/model.gguf
 
+      - name: Stage bundled overlay from repository root
+        run: |
+          set -euo pipefail
+          destination="$GITHUB_WORKSPACE/build-armbian/armbian-files/common-files"
+          test -d "$destination"
+          cp -a agenticos-files/. "$destination/"
+          cmp agenticos-files/usr/local/bin/llama-server "$destination/usr/local/bin/llama-server"
+          cmp agenticos-files/var/lib/agenticos/models/model.gguf "$destination/var/lib/agenticos/models/model.gguf"
+
       - name: Rebuild Armbian for target boards
         uses: ./
         if: ${{ env.ARMBIAN_URL != '' && !cancelled() }}
@@ -500,7 +509,46 @@ jobs:
           armbian_fstype: ${{ inputs.armbian_fstype || 'ext4' }}
           builder_name: ${{ inputs.builder_name || 'Agenticos' }}
           armbian_size: ${{ inputs.armbian_size || '512/4096' }}
-          armbian_files: ${{ inputs.armbian_files || 'agenticos-files' }}
+          armbian_files: "false"
+
+      - name: Verify bundled components inside every output image
+        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y qemu-user-static
+          mountpoint=$(mktemp -d)
+          loop=""
+          cleanup() {
+            sudo umount "$mountpoint" 2>/dev/null || true
+            [[ -z "$loop" ]] || sudo losetup -d "$loop"
+            rm -f /builder/agenticos-verify.img
+            rmdir "$mountpoint"
+          }
+          trap cleanup EXIT
+          shopt -s nullglob
+          images=("${PACKAGED_OUTPUTPATH}"/*s905x*.img.gz)
+          ((${#images[@]} > 0))
+          for image in "${images[@]}"; do
+            gzip -dc "$image" > /builder/agenticos-verify.img
+            loop=$(sudo losetup --find --show --partscan /builder/agenticos-verify.img)
+            sudo mount -o ro "${loop}p2" "$mountpoint"
+            sudo cmp agenticos-files/usr/local/bin/llama-server "$mountpoint/usr/local/bin/llama-server"
+            sudo cmp agenticos-files/var/lib/agenticos/models/model.gguf "$mountpoint/var/lib/agenticos/models/model.gguf"
+            sudo cmp agenticos-files/etc/agenticos/agenticos.conf "$mountpoint/etc/agenticos/agenticos.conf"
+            sudo test -x "$mountpoint/usr/local/bin/agenticos"
+            sudo test -x "$mountpoint/usr/local/bin/agenticos-firstboot"
+            sudo test -x "$mountpoint/usr/bin/python3"
+            for service in agenticos-firstboot llama-server; do
+              [[ $(sudo readlink "$mountpoint/etc/systemd/system/multi-user.target.wants/$service.service") == "/etc/systemd/system/$service.service" ]]
+              sudo test -f "$mountpoint/etc/systemd/system/$service.service"
+            done
+            sudo qemu-aarch64-static -cpu cortex-a53 -L "$mountpoint" "$mountpoint/usr/local/bin/llama-server" --version
+            echo "Verified bundled runtime and model: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
+            sudo umount "$mountpoint"
+            sudo losetup -d "$loop"
+            loop=""
+            rm /builder/agenticos-verify.img
+          done
 
       - name: Verify release image size
         if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}

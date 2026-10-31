@@ -23,3 +23,7 @@ A successful Actions build does not prove physical HG680P boot, eMMC installatio
 ## Initial branch build
 
 A push changing the Agenticos workflow or overlay on branch `agenticos` starts a build with the documented defaults. This enables validation before merging the new workflow to `main`. Manual `workflow_dispatch` remains available. No original workflow is modified.
+
+## Overlay verification
+
+The first run exposed an existing action bug: its optional overlay copy runs from `build/output/images` and ignores a missing destination error. The Agenticos workflow stages files explicitly from the repository root and disables that optional action copy. Every generated image is mounted read-only before release upload. The bundled binary, model, and configuration must match the overlay; executable bits, Python, services and enablement links are checked. The binary must also execute `--version` under Cortex-A53 QEMU using the image libraries. This does not replace a physical boot or inference test.
