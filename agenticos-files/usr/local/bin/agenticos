@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Agenticos: agent loop minimal di atas llama-server lokal (stdlib saja, hemat RAM)."""
-import json, os, pathlib, shlex, subprocess, sys, time, urllib.request, urllib.error
+import json, os, pathlib, shlex, subprocess, sys, time, urllib.request, urllib.error, urllib.parse
 
 def load_conf(path="/etc/agenticos/agenticos.conf"):
     try:
@@ -34,6 +34,8 @@ def t_read_file(path):
 def t_write_file(path, content):
     f = safe_path(path)
     f.parent.mkdir(parents=True, exist_ok=True)
+    if f.is_symlink():
+        raise ValueError('symlink writes are not permitted')
     f.write_text(content)
     return f"ditulis {len(content)} karakter ke {path}"
 
@@ -41,6 +43,8 @@ def t_run(cmd):
     argv = shlex.split(cmd)
     if not argv or argv[0] not in ALLOWED_CMDS:
         raise ValueError(f"perintah tidak diizinkan: {argv[:1]}")
+    if len(argv) != 1:
+        raise ValueError(f"argumen tambahan tidak diizinkan: {argv!r}; gunakan nama perintah saja atau tool system_status")
     r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
     return (r.stdout + r.stderr)[:2000]
 
@@ -72,13 +76,23 @@ SCHEMA = {"type": "object",
 SYSTEM = ("You are Agenticos, a local agent on a small Linux device. Solve the task step by step. "
           "Each turn reply with ONE JSON object: thought, tool, args. Tools:\n"
           + "\n".join("- " + d for _, d, _ in TOOLS.values())
-          + "\nAfter each tool you get an Observation. Use finish when done. "
+          + "\nFor system health/status requests, use system_status directly rather than run. "
+            "The run tool accepts only a bare command name without flags or arguments. "
+            "After each tool you get an Observation. Use finish when done. "
             "Answer in the user's language.")
 
 def chat(messages):
     body = json.dumps({"messages": messages, "temperature": 0.2, "max_tokens": 300,
                        "response_format": {"type": "json_object", "schema": SCHEMA}}).encode()
+    parsed = urllib.parse.urlparse(URL)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("unsupported LLM URL scheme")
     req = urllib.request.Request(URL, body, {"Content-Type": "application/json"})
+    api_key = os.environ.get("AGENTICOS_API_KEY", "")
+    if api_key:
+        if parsed.scheme != "https":
+            raise ValueError("remote credentials require HTTPS")
+        req.add_header("Authorization", "Bearer " + api_key)
     with urllib.request.urlopen(req, timeout=300) as r:
         return json.load(r)["choices"][0]["message"]["content"]
 
@@ -91,14 +105,13 @@ def audit(entry):
         pass
 
 def approved(name, args):
-    if os.environ.get("AGENTICOS_AUTO_APPROVE") == "1":
-        return True
     if not sys.stdin.isatty():
         return False
     return input(f"Izinkan {name}({json.dumps(args, ensure_ascii=False)[:200]})? [y/N] ").lower() == "y"
 
 def run_task(task):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
+    previous_call = None
     for step in range(MAX_STEPS):
         try:
             raw = chat(msgs)
@@ -114,6 +127,14 @@ def run_task(task):
         if name == "finish":
             audit({"task": task, "tool": "finish", "args": args})
             return str(args.get("answer", ""))
+        if name not in TOOLS:
+            msgs.append({"role": "user", "content": "Observation: unknown tool"})
+            continue
+        call = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+        if call == previous_call:
+            audit({"task": task, "step": step, "tool": name, "obs": "duplicate tool call blocked"})
+            return f"Agent berhenti: pemanggilan tool {name} berulang tanpa progres; jawaban final belum dihasilkan."
+        previous_call = call
         fn, _, needs_ok = TOOLS[name]
         if needs_ok and not approved(name, args):
             obs = "DITOLAK: butuh persetujuan manusia"
@@ -129,7 +150,10 @@ def run_task(task):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        print(run_task(" ".join(sys.argv[1:])))
+        result = run_task(" ".join(sys.argv[1:]))
+        print(result)
+        if result.startswith(("LLM server tidak terjangkau:", "Agent berhenti:", "Batas langkah tercapai")):
+            sys.exit(1)
     else:
         while True:
             try:
