@@ -466,7 +466,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
+          # Pin to the llama.cpp revision used by the verified working Agenticos Build #9.
+          LLAMA_CPP_REV=a91eab67d8389d979d29fdf6633b2edd0718eb4b
+          git init /tmp/llama.cpp
+          git -C /tmp/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp
+          git -C /tmp/llama.cpp fetch --depth 1 origin "$LLAMA_CPP_REV"
+          git -C /tmp/llama.cpp checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/llama.cpp rev-parse HEAD)" = "$LLAMA_CPP_REV"
           git -C /tmp/llama.cpp rev-parse HEAD | tee /tmp/llama-source.txt
           echo "LLAMA_CPP_COMMIT=$(cat /tmp/llama-source.txt)" >> "$GITHUB_ENV"
           cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
