@@ -111,6 +111,7 @@ def approved(name, args):
 
 def run_task(task):
     msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": task}]
+    previous_call = None
     for step in range(MAX_STEPS):
         try:
             raw = chat(msgs)
@@ -129,6 +130,11 @@ def run_task(task):
         if name not in TOOLS:
             msgs.append({"role": "user", "content": "Observation: unknown tool"})
             continue
+        call = (name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+        if call == previous_call:
+            audit({"task": task, "step": step, "tool": name, "obs": "duplicate tool call blocked"})
+            return f"Agent berhenti: pemanggilan tool {name} berulang tanpa progres; jawaban final belum dihasilkan."
+        previous_call = call
         fn, _, needs_ok = TOOLS[name]
         if needs_ok and not approved(name, args):
             obs = "DITOLAK: butuh persetujuan manusia"
