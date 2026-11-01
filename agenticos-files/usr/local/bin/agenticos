@@ -150,7 +150,10 @@ def run_task(task):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        print(run_task(" ".join(sys.argv[1:])))
+        result = run_task(" ".join(sys.argv[1:]))
+        print(result)
+        if result.startswith(("LLM server tidak terjangkau:", "Agent berhenti:", "Batas langkah tercapai")):
+            sys.exit(1)
     else:
         while True:
             try:
