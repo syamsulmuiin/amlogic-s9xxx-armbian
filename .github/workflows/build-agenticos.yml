@@ -492,6 +492,8 @@ jobs:
           mkdir -p agenticos-files/var/lib/agenticos/models
           curl -fL --retry 5 -o agenticos-files/var/lib/agenticos/models/model.gguf "$AGENTICOS_MODEL_URL"
           test "$(head -c 4 agenticos-files/var/lib/agenticos/models/model.gguf)" = GGUF
+          # Expected SHA-256 from Hugging Face X-Linked-ETag for this GGUF.
+          echo "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e  agenticos-files/var/lib/agenticos/models/model.gguf" | sha256sum -c -
           ls -lh agenticos-files/var/lib/agenticos/models/model.gguf
 
       - name: Stage bundled overlay from repository root
