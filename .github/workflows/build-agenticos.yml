@@ -522,6 +522,7 @@ jobs:
           armbian_files: "false"
 
       - name: Verify bundled components inside every output image
+        id: verify_image
         if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
         run: |
           set -euo pipefail
@@ -608,7 +609,7 @@ jobs:
 
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        if: ${{ env.PACKAGED_STATUS == 'success' && steps.verify_image.outcome == 'success' && !cancelled() }}
         with:
           tag: ${{ env.build_tag }}
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*s905x*.img.gz
