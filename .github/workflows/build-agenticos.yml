@@ -584,7 +584,7 @@ jobs:
               -H 'Content-Type: application/json' \
               -d '{"prompt":"Complete the following arithmetic: 2 + 2 =","temperature":0,"n_predict":8}' \
               -o /tmp/agenticos-inference.json
-            python3 -c 'import json,re; d=json.load(open("/tmp/agenticos-inference.json")); answer=d["content"].strip(); print("ARM64 inference answer:",repr(answer)); assert re.match(r"^4(?:\\D|$)",answer), "ARM64 inference produced an incorrect answer"'
+            python3 -c 'import json,re; d=json.load(open("/tmp/agenticos-inference.json")); answer=d["content"].strip(); print("ARM64 inference answer:",repr(answer)); assert re.match(r"^4(?:\D|$)",answer), "ARM64 inference produced an incorrect answer"'
             infer_cleanup
             trap cleanup EXIT
             echo "Verified bundled runtime, model and ARM64 inference: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
