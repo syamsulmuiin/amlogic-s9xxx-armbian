@@ -553,7 +553,41 @@ jobs:
               sudo test -f "$mountpoint/etc/systemd/system/$service.service"
             done
             sudo qemu-aarch64-static -cpu cortex-a53 -L "$mountpoint" "$mountpoint/usr/local/bin/llama-server" --version
-            echo "Verified bundled runtime and model: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
+            # Verify real inference, not just startup: a corrupt/incompatible GGUF
+            # previously produced repeated unrelated tokens while /health was OK.
+            sudo qemu-aarch64-static -cpu cortex-a53 -L "$mountpoint" \
+              "$mountpoint/usr/local/bin/llama-server" \
+              -m "$mountpoint/var/lib/agenticos/models/model.gguf" \
+              -c 256 -t 2 -np 1 --host 127.0.0.1 --port 18080 \
+              > /tmp/agenticos-inference.log 2>&1 &
+            infer_pid=$!
+            infer_cleanup() {
+              kill "$infer_pid" 2>/dev/null || true
+              wait "$infer_pid" 2>/dev/null || true
+            }
+            trap 'infer_cleanup; cleanup' EXIT
+            ready=0
+            for attempt in $(seq 1 120); do
+              if curl -fsS --max-time 2 http://127.0.0.1:18080/health | grep -q '"status":"ok"'; then
+                ready=1
+                break
+              fi
+              if ! kill -0 "$infer_pid" 2>/dev/null; then break; fi
+              sleep 2
+            done
+            if [[ "$ready" != 1 ]]; then
+              tail -60 /tmp/agenticos-inference.log
+              echo "ARM64 inference server failed to become ready" >&2
+              exit 1
+            fi
+            curl -fsS --max-time 240 http://127.0.0.1:18080/completion \
+              -H 'Content-Type: application/json' \
+              -d '{"prompt":"Complete the following arithmetic: 2 + 2 =","temperature":0,"n_predict":8}' \
+              -o /tmp/agenticos-inference.json
+            python3 -c 'import json,re; d=json.load(open("/tmp/agenticos-inference.json")); answer=d["content"].strip(); print("ARM64 inference answer:",repr(answer)); assert re.match(r"^4(?:\\D|$)",answer), "ARM64 inference produced an incorrect answer"'
+            infer_cleanup
+            trap cleanup EXIT
+            echo "Verified bundled runtime, model and ARM64 inference: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
             sudo umount "$mountpoint"
             sudo losetup -d "$loop"
             loop=""
