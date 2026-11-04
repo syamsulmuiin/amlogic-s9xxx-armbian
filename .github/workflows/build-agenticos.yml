@@ -466,8 +466,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
+          # Pin to the llama.cpp revision used by the verified working Agenticos Build #9.
+          LLAMA_CPP_REV=a91eab67d8389d979d29fdf6633b2edd0718eb4b
+          git init /tmp/llama.cpp
+          git -C /tmp/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp
+          git -C /tmp/llama.cpp fetch --depth 1 origin "$LLAMA_CPP_REV"
+          git -C /tmp/llama.cpp checkout --detach FETCH_HEAD
+          test "$(git -C /tmp/llama.cpp rev-parse HEAD)" = "$LLAMA_CPP_REV"
           git -C /tmp/llama.cpp rev-parse HEAD | tee /tmp/llama-source.txt
+          echo "LLAMA_CPP_COMMIT=$(cat /tmp/llama-source.txt)" >> "$GITHUB_ENV"
           cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
@@ -477,6 +484,7 @@ jobs:
           install -D -m 755 /tmp/llama.cpp/build/bin/llama-server agenticos-files/usr/local/bin/llama-server
           file agenticos-files/usr/local/bin/llama-server
           aarch64-linux-gnu-readelf -d agenticos-files/usr/local/bin/llama-server
+          echo "llama.cpp source: $(cat /tmp/llama-source.txt)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Unduh model ke overlay
         run: |
@@ -484,6 +492,8 @@ jobs:
           mkdir -p agenticos-files/var/lib/agenticos/models
           curl -fL --retry 5 -o agenticos-files/var/lib/agenticos/models/model.gguf "$AGENTICOS_MODEL_URL"
           test "$(head -c 4 agenticos-files/var/lib/agenticos/models/model.gguf)" = GGUF
+          # Expected SHA-256 from Hugging Face X-Linked-ETag for this GGUF.
+          echo "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e  agenticos-files/var/lib/agenticos/models/model.gguf" | sha256sum -c -
           ls -lh agenticos-files/var/lib/agenticos/models/model.gguf
 
       - name: Stage bundled overlay from repository root
@@ -512,6 +522,7 @@ jobs:
           armbian_files: "false"
 
       - name: Verify bundled components inside every output image
+        id: verify_image
         if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
         run: |
           set -euo pipefail
@@ -543,7 +554,41 @@ jobs:
               sudo test -f "$mountpoint/etc/systemd/system/$service.service"
             done
             sudo qemu-aarch64-static -cpu cortex-a53 -L "$mountpoint" "$mountpoint/usr/local/bin/llama-server" --version
-            echo "Verified bundled runtime and model: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
+            # Verify real inference, not just startup: a corrupt/incompatible GGUF
+            # previously produced repeated unrelated tokens while /health was OK.
+            sudo qemu-aarch64-static -cpu cortex-a53 -L "$mountpoint" \
+              "$mountpoint/usr/local/bin/llama-server" \
+              -m "$mountpoint/var/lib/agenticos/models/model.gguf" \
+              -c 256 -t 2 -np 1 --host 127.0.0.1 --port 18080 \
+              > /tmp/agenticos-inference.log 2>&1 &
+            infer_pid=$!
+            infer_cleanup() {
+              kill "$infer_pid" 2>/dev/null || true
+              wait "$infer_pid" 2>/dev/null || true
+            }
+            trap 'infer_cleanup; cleanup' EXIT
+            ready=0
+            for attempt in $(seq 1 120); do
+              if curl -fsS --max-time 2 http://127.0.0.1:18080/health | grep -q '"status":"ok"'; then
+                ready=1
+                break
+              fi
+              if ! kill -0 "$infer_pid" 2>/dev/null; then break; fi
+              sleep 2
+            done
+            if [[ "$ready" != 1 ]]; then
+              tail -60 /tmp/agenticos-inference.log
+              echo "ARM64 inference server failed to become ready" >&2
+              exit 1
+            fi
+            curl -fsS --max-time 240 http://127.0.0.1:18080/completion \
+              -H 'Content-Type: application/json' \
+              -d '{"prompt":"Complete the following arithmetic: 2 + 2 =","temperature":0,"n_predict":8}' \
+              -o /tmp/agenticos-inference.json
+            python3 -c 'import json,re; d=json.load(open("/tmp/agenticos-inference.json")); answer=d["content"].strip(); print("ARM64 inference answer:",repr(answer)); assert re.match(r"^4(?:\D|$)",answer), "ARM64 inference produced an incorrect answer"'
+            infer_cleanup
+            trap cleanup EXIT
+            echo "Verified bundled runtime, model and ARM64 inference: $(basename "$image")" >> "$GITHUB_STEP_SUMMARY"
             sudo umount "$mountpoint"
             sudo losetup -d "$loop"
             loop=""
@@ -564,7 +609,7 @@ jobs:
 
       - name: Upload Armbian images to Release
         uses: ophub/upload-to-releases@main
-        if: ${{ env.PACKAGED_STATUS == 'success' && !cancelled() }}
+        if: ${{ env.PACKAGED_STATUS == 'success' && steps.verify_image.outcome == 'success' && !cancelled() }}
         with:
           tag: ${{ env.build_tag }}
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*s905x*.img.gz
