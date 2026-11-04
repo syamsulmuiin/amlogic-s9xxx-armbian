@@ -70,7 +70,7 @@ TOOLS = {
 SCHEMA = {"type": "object",
           "properties": {"thought": {"type": "string"},
                          "tool": {"type": "string", "enum": list(TOOLS)},
-                         "args": {"type": "object"}},
+                         "args": {"type": "object", "properties": {"answer": {"type": "string"}}}},
           "required": ["thought", "tool", "args"]}
 
 SYSTEM = ("You are Agenticos, a local agent on a small Linux device. Solve the task step by step. "
@@ -79,6 +79,8 @@ SYSTEM = ("You are Agenticos, a local agent on a small Linux device. Solve the t
           + "\nFor system health/status requests, use system_status directly rather than run. "
             "The run tool accepts only a bare command name without flags or arguments. "
             "After each tool you get an Observation. Use finish when done. "
+            "To finish, always include args.answer as a non-empty string, e.g. "
+            '{"thought":"Task complete","tool":"finish","args":{"answer":"Agenticos siap."}}. '
             "Answer in the user's language.")
 
 def chat(messages):
@@ -128,7 +130,8 @@ def run_task(task):
             answer = args.get("answer")
             if not isinstance(answer, str) or not answer.strip():
                 audit({"task": task, "step": step, "tool": "finish", "args": args, "obs": "empty answer rejected"})
-                return "Agent berhenti: tool finish tidak memberikan jawaban final."
+                msgs.append({"role": "user", "content": "Observation: finish rejected because args.answer is missing or empty. Call finish again with args.answer containing the final response as a non-empty string."})
+                continue
             audit({"task": task, "tool": "finish", "args": args})
             return answer
         if name not in TOOLS:
