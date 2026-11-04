@@ -125,8 +125,12 @@ def run_task(task):
             msgs.append({"role": "user", "content": "Observation: output bukan JSON valid"})
             continue
         if name == "finish":
+            answer = args.get("answer")
+            if not isinstance(answer, str) or not answer.strip():
+                audit({"task": task, "step": step, "tool": "finish", "args": args, "obs": "empty answer rejected"})
+                return "Agent berhenti: tool finish tidak memberikan jawaban final."
             audit({"task": task, "tool": "finish", "args": args})
-            return str(args.get("answer", ""))
+            return answer
         if name not in TOOLS:
             msgs.append({"role": "user", "content": "Observation: unknown tool"})
             continue
